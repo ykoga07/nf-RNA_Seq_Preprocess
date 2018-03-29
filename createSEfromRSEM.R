@@ -5,6 +5,7 @@ suppressPackageStartupMessages(library(affy))
 suppressPackageStartupMessages(library(SummarizedExperiment))
 suppressPackageStartupMessages(library(GenomicFeatures))
 suppressPackageStartupMessages(library("biomaRt"))
+suppressPackageStartupMessages(library("dplyr"))
 
 option_list <- list(
   make_option(c("-a", "--genesresultsfile"), type="character", help="genesresultsfile"),
@@ -52,55 +53,90 @@ pfile13<- scan(opt$tinfile,what="")
 
 
 #Input file
-file2 =  read.table(pfile2, header=TRUE, stringsAsFactors=FALSE, quote="",row.names = "SAMPLE_ID")
-colnames(file2) = removalOfChars(file2)
-phenofile = file2
-
-
-#Demographics
-if (!is.na(opt$demographicfile)){
-  file1 = read.table(pfile1, header=TRUE, stringsAsFactors=FALSE, quote="",row.names = 1)
-  phenofile = cbind(phenofile,t(file1))
-}
+file2 =  read.table(pfile2, header=TRUE, stringsAsFactors=FALSE, quote="")
+inputfile <- file2 %>% group_by_(.dots=c("INDIVIDUAL_ID","SAMPLE_ID","LIBRARY_ID")) %>% 
+  summarise(RG_ID = paste(RG_ID, collapse = ","),
+            PLATFORM_UNIT = paste(PLATFORM_UNIT, collapse = ","),
+            PLATFORM = paste(PLATFORM, collapse = ","),
+            PLATFORM_MODEL = paste(PLATFORM_MODEL, collapse = ","),
+            RUN_DATE = paste(RUN_DATE, collapse = ","),
+            CENTER = paste(CENTER, collapse = ","), 
+            R1 = paste(R1, collapse = ","), 
+            R2 = paste(R2, collapse = ","))
+phenofile = as.data.frame(inputfile)
+rownames(phenofile) = inputfile$SAMPLE_ID
+colnames(phenofile) = removalOfChars(phenofile)
 
 #Demographics
 if (!is.na(opt$demographicfile)){
   demo = read.table(pfile1, header=TRUE, stringsAsFactors=FALSE, quote="",row.names = 1, sep = "\t")
-  indices <- match(row.names(file2),row.names(demo))
+  indices <- match(row.names(phenofile),row.names(demo))
   file1 <- demo[indices,]
   file1 <- file1[(rownames(phenofile)),]
   colnames(file1) <- paste("Annot",colnames(file1),sep="_")
   colnames(file1) <-removalOfChars(file1)
   phenofile = cbind(phenofile,(file1))
 }
-file <- data.frame(x=1:5,y=c('a','b','v','TESTING 123','Y.KOGA DID THIS'))
-file <- removalOfChars(file)
-file
-#FASTQ
-file3 = read.table(pfile3, header=TRUE,sep = "\t", stringsAsFactors=FALSE, quote="",row.names = 1)
-a<- 0
 
-matrix <- c()
-while(a <nrow(file3)){
-   a = a+2
-   x <- file3[a-1,]
-   colnames(x) <- paste("FastQC_R1",colnames(x),sep="_")
-   y <- file3[a,]
-   colnames(y) <- paste("FastQC_R2",colnames(y),sep="_")
-   filex <- cbind(x,y)
-   matrix <- rbind(matrix,filex)
+#FASTQ
+file3 = read.table(pfile3, header=TRUE,sep = "\t", stringsAsFactors=FALSE, quote="")
+
+#Modify file3$Sample so it can be grouped by lib.ID via dplyr
+file3$Sample = substr(file3$Sample,1,8)
+for(x in 1:nrow(file3)){
+  if(x%%2 != 0){
+    file3$Sample[x] <- paste0(file3$Sample[x],"R1") 
+  }else{
+    file3$Sample[x] <- paste0(file3$Sample[x],"R2")
+  }
 }
-colnames(file3) = removalOfChars(file3)
+
+#New "file3"
+file3.new <- file3 %>% group_by_(.dots="Sample") %>% 
+  summarise(adapter_content = paste(adapter_content, collapse = ","),
+            Sequences.flagged.as.poor.quality = sum(Sequences.flagged.as.poor.quality),
+            sequence_duplication_levels = paste(sequence_duplication_levels, collapse = ","),
+            avg_sequence_length = mean(avg_sequence_length),
+            Encoding = paste(Encoding, collapse = ","),
+            kmer_content = paste(kmer_content, collapse = ","),
+            per_base_sequence_quality = paste(per_base_sequence_quality, collapse = ","),
+            sequence_length_distribution = paste(sequence_length_distribution, collapse = ","),
+            Sequence.length = paste(Sequence.length, collapse = ","),
+            File.type = paste(File.type, collapse = ","),
+            basic_statistics = paste(basic_statistics, collapse = ","),
+            per_sequence_gc_content = paste(per_sequence_gc_content, collapse = ","),
+            Total.Sequences = sum(Total.Sequences),
+            per_base_n_content = paste(per_base_n_content, collapse = ","),
+            per_base_sequence_content = paste(per_base_sequence_content, collapse = ","),
+            overrepresented_sequences = paste(overrepresented_sequences, collapse = ","),
+            X.GC = mean(X.GC),
+            total_deduplicated_percentage = mean(total_deduplicated_percentage),
+            per_tile_sequence_quality = paste(per_tile_sequence_quality, collapse = ","),
+            per_sequence_quality_scores = paste(per_sequence_quality_scores, collapse = ","))
+
+a = 0
+colnames(file3.new) = removalOfChars(file3.new)
+matrix <- c()
+while(a <nrow(file3.new)){
+  a = a+2
+  x <- file3.new[a-1,]
+  colnames(x) <- paste("FastQC_R1",colnames(x),sep="_")
+  y <- file3.new[a,]
+  colnames(y) <- paste("FastQC_R2",colnames(y),sep="_")
+  filex <- cbind(x,y)
+  matrix <- rbind(matrix,filex)
+}
+
 phenofile <- cbind(phenofile,matrix)
 
 #Picard Marked Duplicates
 file4 = read.table(pfile4,header=TRUE, stringsAsFactors=FALSE, quote="",row.names = 1)
 colnames(file4) <- paste("Picard_MarkDuplicates",colnames(file4),sep="_")
 rownames(file4) <- gsub("_.*rgid$", "",rownames(file4))
+
 file4 <- file4[(rownames(phenofile)),]
 colnames(file4) = removalOfChars(file4)
 phenofile = cbind(phenofile,file4)
-
 #RSeqC BamStat
 file5 = read.table(pfile5,header=TRUE, stringsAsFactors=FALSE, quote="", row.names = 1) 
 colnames(file5) <- paste("RSeQC_BamStat",colnames(file5),sep="_")
@@ -124,7 +160,6 @@ colnames(file7) <- paste("RSeQC_Infer_Experiment", colnames(file7), sep="_")
 file7 <- file7[(rownames(phenofile)),]
 colnames(file7) = removalOfChars(file7)
 phenofile = cbind(phenofile,file7)
-
 #RSeqC Junction Annotation
 file8 = read.table(pfile8, header=TRUE, stringsAsFactors=FALSE, quote="", row.names = 1)
 rownames(file8) <-  gsub(".junction_annotation","",row.names(file8))
@@ -155,18 +190,33 @@ colnames(file12) = removalOfChars(file12)
 colnames(file12) = paste("STAR_2pass",colnames(file12),sep="_")
 phenofile = cbind(phenofile,file12)
 
+
 forFile13 <- c()
 for (i in pfile13){
-  print(i)
   file13 = read.table(i, row.names = 1, header = TRUE)
   forFile13 <- rbind(forFile13,file13)
 }
 rownames(forFile13) <- gsub(".bam","",rownames(forFile13))
-forFile13 = forFile13[(rownames(phenofile)),]
-colnames(forFile13) = removalOfChars(forFile13)
-colnames(forFile13) = gsub("_$","",colnames(forFile13))
-colnames(forFile13) = paste("RSeQC",colnames(forFile13),sep="_")
-phenofile = cbind(phenofile,forFile13)
+
+forFile13$C = substr(x = rownames(forFile13),start = 1, stop =34)
+
+file13.new <- forFile13 %>% group_by_(.dots="C") %>% 
+  summarise(TIN_mean = mean(TIN.mean.),
+            TIN_median = mean(TIN.median.),
+            TIN_stdev = mean(TIN.stdev.))
+
+class(file13.new) <- "data.frame"
+rownames(file13.new) <- file13.new$C
+file13.new$C <- NULL
+
+
+file13.new = file13.new[(rownames(phenofile)),]
+colnames(file13.new) = removalOfChars(file13.new)
+colnames(file13.new) = gsub("_$","",colnames(file13.new))
+colnames(file13.new) = paste("RSeQC",colnames(file13.new),sep="_")
+phenofile = cbind(phenofile,file13.new)
+
+print("File loading complete")
 ##Reading in assay data
 
 #gene data
@@ -214,7 +264,6 @@ naming <- function(name,title,matrix,phenofile){
   matrix <- matrix[,(rownames(phenofile))]
   return(matrix)
 }
-
 
 #Naming the rows/matrices
 posterior_mean_count <- naming(name.matrix,title.matrix,posterior_mean_count,phenofile)
@@ -293,7 +342,7 @@ fpkm_ci_upperbound_tr <- naming(nametr.matrix,titletr.matrix,fpkm_ci_upperbound_
 fpkm_coefficient_quartile_variation_tr <- naming(nametr.matrix,titletr.matrix,fpkm_coefficient_quartile_variation_tr,phenofile)
 isopct_tr <- naming(nametr.matrix,titletr.matrix,isopct_tr,phenofile)
 isopct_pmetpm_tr <- naming(nametr.matrix,titletr.matrix,isopct_pmetpm_tr,phenofile)
-
+print("Finished with making counts matrix")
 ##Adding in rowRanges data
 txdb = makeTxDbFromGFF(pfile10)
 genedata = genes(txdb)
