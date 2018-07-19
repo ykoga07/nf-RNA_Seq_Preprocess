@@ -22,9 +22,16 @@
 // - If specified, SGE qstat 'mem_total' flag is passed to Java -Xmx maximum heap size flag.
 // - Formatting and other edits throughout for readability, etc.
 //
+//
 // Yusuke Koga
 // 03/29/2018
-// Modifications to config file for better memory allocation on scc, can take in multiple fastq files per sample.
+// -Modifications to config file for better memory allocation on scc
+// -Can take in multiple fastq files per sample.
+//
+// Yusuke Koga
+// 06/18/2018
+// -Alignment of input Fastq files against human mitochondrial/ribosomal RNA sequences to determine whether traces of mitochondrial/ribosomal RNA exist within dataset. 
+// Courtesy of Neha Parulekar
 //
 //############################################################################################################################
 
@@ -52,7 +59,8 @@ RSEM_REF = file(params.RSEM.reference)
 
 // STAR variables
 STAR_REF = file(params.STAR.ref_dir)
-
+STAR_RIBOMITO_DIR = file(params.STAR_ribomito_dir)
+STAR_RIBMIT = file(params.STAR_ribomito)
 // Module versions
 FASTQC_MODULE = params.modules.fastqc
 GATK_MODULE = params.modules.gatk
@@ -115,7 +123,7 @@ Channel.from(inputFile)
         return [indivID, sample_ID, lib_ID, rgID, platform_unit, platform, platform_model, run_date, center, R1, R2]
   }
    .groupTuple(by: [0,1,2])
-   .into {runSTAR_1pass_Fastq}
+   .into {runSTAR_1pass_Fastq; runSTAR_input}
 
 Channel.from(inputFile)
   .splitCsv(sep: '\t', header: inputFileHeader)
@@ -123,7 +131,7 @@ Channel.from(inputFile)
 
 process runSTAR_1pass {
     tag "${indivID}|${sampleID}|${libraryID}|${rgID}"
-    publishDir "${OUTDIR}/${indivID}/${sampleID}/Processing/Libraries/STAR_1Pass/"
+    publishDir "${OUTDIR}/${indivID}/${sampleID}/Processing/Libraries/${libraryID}/${rgID}/STAR_1Pass/"
 
     input:
     set indivID, sampleID, libraryID, rgID, platform_unit, platform, platform_model, run_date, center, R1, R2 from runSTAR_1pass_Fastq
@@ -215,9 +223,59 @@ process runSTAR_2pass {
          --outSAMunmapped Within \
          --readFilesCommand zcat \
          --limitBAMsortRAM 80000000000
+    """}
+
+process runSTAR_GenomeGenerate_RIBOMITO {
+    tag "Generating STAR genome reference with Splice Junctions"
+    publishDir "${OUTDIR}/Output/STAR_Genome/RIBOMITO_Index"
+
+
+    output:
+        set file('Genome'), file('SA'), file('SAindex'), file("*.txt"), file("*.out") into runSTAR_GenomeGenerateRiboMitoOutput
+
+    script:
+    """
+    module load star/2.5.2b
+
+    STAR --runMode genomeGenerate   \
+          --genomeDir ./               \
+         --genomeFastaFiles ${STAR_RIBMIT}  \
+         --runThreadN 2 \
+         --genomeSAindexNbases 3
     """
 }
 
+
+
+process runSTAR_RIBOMITO {
+    tag "${indivID}|${sampleID}|${libraryID}|${rgID}"
+    publishDir "${OUTDIR}/${indivID}/${sampleID}/Processing/Libraries/${libraryID}/${rgID}/STAR_RIBOMITO/"
+
+    input:
+    set indivID, sampleID, libraryID, rgID, platform_unit, platform, platform_model, run_date, center, R1, R2 from runSTAR_input
+    set genomeFile, other_files from runSTAR_GenomeGenerateRiboMitoOutput.first()
+
+    output:
+    file(outfile_log) into runSTAR_RIBOMITOMultiQCOutput
+
+ script:
+    outfile_prefix = sampleID
+    outfile_log = outfile_prefix + "Log.final.out"
+    genomeDir = genomeFile.getParent()
+
+    """
+    module load ${STAR_MODULE}
+    module list
+
+    STAR --genomeDir ${genomeDir}  \
+         --readFilesIn ${R1.join(",")} ${R2.join(",")} \
+         --runThreadN \$NSLOTS \
+         --outFileNamePrefix ${outfile_prefix} \
+         --outFilterMultimapNmax 20 \
+         --outFilterType BySJout \
+         --readFilesCommand zcat \
+    """
+}
 
 //-------------------------------------------------------------------------------------------------------------
 //
@@ -325,7 +383,7 @@ process runAddReadGroupInfo {
         
     MEM_TOTAL="\$(qstat -j \$JOB_ID | grep -oP "mem_total=[^,]+" | cut -f2 -d'=')"
 
-    java \$([ \$MEM_TOTAL != "" ] && echo "-Xmx\$MEM_TOTAL") \
+    java \$([[ \$MEM_TOTAL != "" ]] && echo "-Xmx\$MEM_TOTAL") \
          -XX:ParallelGCThreads=\$NSLOTS \
          -Djava.io.tmpdir=tmp/ \
          -jar "\$SCC_PICARD_LIB/picard.jar" \
@@ -1038,6 +1096,29 @@ process runMultiQCSample {
     multiqc -n sample_multiqc --file-list sample_multiqc_input_files.txt
     """
 }
+
+process runMultiQC_RIBOMITO {
+    tag "Generating sample level summary and QC plots"
+        publishDir "${OUTDIR}/Output/QC/RIBOMITO"
+
+    input:
+    val star_files from runSTAR_RIBOMITOMultiQCOutput.flatten().toSortedList()
+
+    output:
+    file("RiboMito_multiqc.html") into runMultiQC_RIBOMITOOutput
+    file("RiboMito_multiqc_input_files.txt") into runMultiQC_RIBOMITOOutputFile
+
+    script:
+    """
+    module load python/2.7.12
+    module load multiqc/0.9
+
+    echo -e "${star_files.join('\n')}" >> RiboMito_multiqc_input_files.txt
+
+    multiqc -n RiboMito_multiqc --file-list RiboMito_multiqc_input_files.txt
+    """
+}
+
 
 // ------------------------------------------------------------------------------------------------------------
 //
